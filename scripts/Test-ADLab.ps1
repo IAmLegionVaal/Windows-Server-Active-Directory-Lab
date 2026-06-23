@@ -1,6 +1,6 @@
 #requires -Version 5.1
 
-<#+
+<#
 .SYNOPSIS
     Performs read-only validation checks on a Windows Active Directory lab device.
 
@@ -38,7 +38,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$results = New-Object System.Collections.Generic.List[object]
+$results = New-Object 'System.Collections.Generic.List[object]'
 
 function Add-CheckResult {
     param(
@@ -89,19 +89,19 @@ $computerSystem = $null
 Invoke-SafeCheck -Name 'Computer information' -ScriptBlock {
     $script:computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem
 
-    $membershipText = if ($computerSystem.PartOfDomain) {
-        "Domain joined to $($computerSystem.Domain)"
+    if ($computerSystem.PartOfDomain) {
+        $membershipText = "Domain joined to $($computerSystem.Domain)"
+        $membershipStatus = 'Pass'
     }
     else {
-        "Not domain joined; current workgroup/domain value: $($computerSystem.Domain)"
+        $membershipText = "Not domain joined; current workgroup/domain value: $($computerSystem.Domain)"
+        $membershipStatus = 'Fail'
     }
 
-    $status = if ($computerSystem.PartOfDomain) { 'Pass' } else { 'Fail' }
-    Add-CheckResult -Check 'Domain membership' -Status $status -Details $membershipText
+    Add-CheckResult -Check 'Domain membership' -Status $membershipStatus -Details $membershipText
 
-    Add-CheckResult -Check 'Computer role' -Status 'Info' -Details (
-        'Win32 domain role value: {0}' -f $computerSystem.DomainRole
-    )
+    $roleText = 'Win32 domain role value: {0}' -f $computerSystem.DomainRole
+    Add-CheckResult -Check 'Computer role' -Status 'Info' -Details $roleText
 }
 
 if (-not $DomainName -and $computerSystem -and $computerSystem.PartOfDomain) {
@@ -110,8 +110,15 @@ if (-not $DomainName -and $computerSystem -and $computerSystem.PartOfDomain) {
 
 Invoke-SafeCheck -Name 'Current identity' -ScriptBlock {
     $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-    $status = if ($identity -match '\\') { 'Info' } else { 'Warning' }
-    Add-CheckResult -Check 'Current sign-in identity' -Status $status -Details $identity
+
+    if ($identity -match '\\') {
+        $identityStatus = 'Info'
+    }
+    else {
+        $identityStatus = 'Warning'
+    }
+
+    Add-CheckResult -Check 'Current sign-in identity' -Status $identityStatus -Details $identity
 }
 
 Invoke-SafeCheck -Name 'DNS client configuration' -ScriptBlock {
@@ -121,14 +128,10 @@ Invoke-SafeCheck -Name 'DNS client configuration' -ScriptBlock {
         Sort-Object -Unique
 
     if ($dnsAddresses) {
-        Add-CheckResult -Check 'Configured IPv4 DNS servers' -Status 'Info' -Details (
-            $dnsAddresses -join ', '
-        )
+        Add-CheckResult -Check 'Configured IPv4 DNS servers' -Status 'Info' -Details ($dnsAddresses -join ', ')
     }
     else {
-        Add-CheckResult -Check 'Configured IPv4 DNS servers' -Status 'Warning' -Details (
-            'No IPv4 DNS server addresses were returned.'
-        )
+        Add-CheckResult -Check 'Configured IPv4 DNS servers' -Status 'Warning' -Details 'No IPv4 DNS server addresses were returned.'
     }
 }
 
@@ -139,12 +142,22 @@ if ($DomainName) {
             Where-Object { $_.IPAddress -or $_.NameHost } |
             Select-Object -First 4 |
             ForEach-Object {
-                if ($_.IPAddress) { $_.IPAddress } else { $_.NameHost }
+                if ($_.IPAddress) {
+                    $_.IPAddress
+                }
+                else {
+                    $_.NameHost
+                }
             }
 
-        Add-CheckResult -Check 'Resolve domain name' -Status 'Pass' -Details (
-            if ($recordSummary) { $recordSummary -join ', ' } else { 'DNS query completed.' }
-        )
+        if ($recordSummary) {
+            $domainDnsDetails = $recordSummary -join ', '
+        }
+        else {
+            $domainDnsDetails = 'DNS query completed.'
+        }
+
+        Add-CheckResult -Check 'Resolve domain name' -Status 'Pass' -Details $domainDnsDetails
     }
 
     Invoke-SafeCheck -Name 'Domain controller discovery' -ScriptBlock {
@@ -152,21 +165,22 @@ if ($DomainName) {
         $nltestExitCode = $LASTEXITCODE
 
         if ($nltestExitCode -eq 0) {
-            Add-CheckResult -Check 'Discover domain controller' -Status 'Pass' -Details (
-                ($nltestOutput | Select-Object -First 1) -join ' '
-            )
+            $firstNltestLine = ($nltestOutput | Select-Object -First 1) -join ' '
+            Add-CheckResult -Check 'Discover domain controller' -Status 'Pass' -Details $firstNltestLine
 
             if (-not $DomainController) {
-                $dcMatch = $nltestOutput | Select-String -Pattern 'DC:\s+\\\\([^\s]+)' | Select-Object -First 1
+                $dcMatch = $nltestOutput |
+                    Select-String -Pattern 'DC:\s+\\\\([^\s]+)' |
+                    Select-Object -First 1
+
                 if ($dcMatch -and $dcMatch.Matches.Count -gt 0) {
                     $script:DomainController = $dcMatch.Matches[0].Groups[1].Value
                 }
             }
         }
         else {
-            Add-CheckResult -Check 'Discover domain controller' -Status 'Fail' -Details (
-                ($nltestOutput -join ' ').Trim()
-            )
+            $nltestError = ($nltestOutput -join ' ').Trim()
+            Add-CheckResult -Check 'Discover domain controller' -Status 'Fail' -Details $nltestError
         }
     }
 
@@ -177,15 +191,18 @@ if ($DomainName) {
             Where-Object { $_.NameTarget } |
             Select-Object -ExpandProperty NameTarget -Unique
 
-        Add-CheckResult -Check 'Resolve AD LDAP SRV record' -Status 'Pass' -Details (
-            if ($targets) { $targets -join ', ' } else { 'SRV query completed.' }
-        )
+        if ($targets) {
+            $srvDetails = $targets -join ', '
+        }
+        else {
+            $srvDetails = 'SRV query completed.'
+        }
+
+        Add-CheckResult -Check 'Resolve AD LDAP SRV record' -Status 'Pass' -Details $srvDetails
     }
 }
 else {
-    Add-CheckResult -Check 'Domain-dependent checks' -Status 'Skipped' -Details (
-        'No domain name was supplied or detected.'
-    )
+    Add-CheckResult -Check 'Domain-dependent checks' -Status 'Skipped' -Details 'No domain name was supplied or detected.'
 }
 
 $isDomainController = $false
@@ -196,21 +213,23 @@ if ($computerSystem) {
 if ($computerSystem -and $computerSystem.PartOfDomain -and -not $isDomainController) {
     Invoke-SafeCheck -Name 'Secure channel' -ScriptBlock {
         $secureChannel = Test-ComputerSecureChannel -ErrorAction Stop
-        $status = if ($secureChannel) { 'Pass' } else { 'Fail' }
-        Add-CheckResult -Check 'Domain secure channel' -Status $status -Details (
-            'Test-ComputerSecureChannel returned {0}.' -f $secureChannel
-        )
+
+        if ($secureChannel) {
+            $secureChannelStatus = 'Pass'
+        }
+        else {
+            $secureChannelStatus = 'Fail'
+        }
+
+        $secureChannelDetails = 'Test-ComputerSecureChannel returned {0}.' -f $secureChannel
+        Add-CheckResult -Check 'Domain secure channel' -Status $secureChannelStatus -Details $secureChannelDetails
     }
 }
 elseif ($isDomainController) {
-    Add-CheckResult -Check 'Domain secure channel' -Status 'Skipped' -Details (
-        'This computer is a domain controller; the client secure-channel test was skipped.'
-    )
+    Add-CheckResult -Check 'Domain secure channel' -Status 'Skipped' -Details 'This computer is a domain controller; the client secure-channel test was skipped.'
 }
 else {
-    Add-CheckResult -Check 'Domain secure channel' -Status 'Skipped' -Details (
-        'The computer is not joined to a domain.'
-    )
+    Add-CheckResult -Check 'Domain secure channel' -Status 'Skipped' -Details 'The computer is not joined to a domain.'
 }
 
 if ($DomainController) {
@@ -220,9 +239,14 @@ if ($DomainController) {
             Where-Object { $_.IPAddress } |
             Select-Object -ExpandProperty IPAddress -Unique
 
-        Add-CheckResult -Check 'Resolve domain controller' -Status 'Pass' -Details (
-            if ($dcAddresses) { $dcAddresses -join ', ' } else { 'DNS query completed.' }
-        )
+        if ($dcAddresses) {
+            $dcDnsDetails = $dcAddresses -join ', '
+        }
+        else {
+            $dcDnsDetails = 'DNS query completed.'
+        }
+
+        Add-CheckResult -Check 'Resolve domain controller' -Status 'Pass' -Details $dcDnsDetails
     }
 
     $ports = @(
@@ -238,23 +262,34 @@ if ($DomainController) {
 
         Invoke-SafeCheck -Name "$currentService port $currentPort" -ScriptBlock {
             $test = Test-NetConnection -ComputerName $DomainController -Port $currentPort -WarningAction SilentlyContinue
-            $status = if ($test.TcpTestSucceeded) { 'Pass' } else { 'Fail' }
-            Add-CheckResult -Check "$currentService TCP/$currentPort" -Status $status -Details (
-                'Target: {0}; Connected: {1}' -f $DomainController, $test.TcpTestSucceeded
-            )
+
+            if ($test.TcpTestSucceeded) {
+                $portStatus = 'Pass'
+            }
+            else {
+                $portStatus = 'Fail'
+            }
+
+            $portDetails = 'Target: {0}; Connected: {1}' -f $DomainController, $test.TcpTestSucceeded
+            Add-CheckResult -Check "$currentService TCP/$currentPort" -Status $portStatus -Details $portDetails
         }
     }
 }
 else {
-    Add-CheckResult -Check 'Domain controller connectivity' -Status 'Skipped' -Details (
-        'No domain controller hostname was supplied or discovered.'
-    )
+    Add-CheckResult -Check 'Domain controller connectivity' -Status 'Skipped' -Details 'No domain controller hostname was supplied or discovered.'
 }
 
 Invoke-SafeCheck -Name 'Netlogon service' -ScriptBlock {
     $netlogon = Get-Service -Name Netlogon
-    $status = if ($netlogon.Status -eq 'Running') { 'Pass' } else { 'Warning' }
-    Add-CheckResult -Check 'Netlogon service' -Status $status -Details $netlogon.Status.ToString()
+
+    if ($netlogon.Status -eq 'Running') {
+        $netlogonStatus = 'Pass'
+    }
+    else {
+        $netlogonStatus = 'Warning'
+    }
+
+    Add-CheckResult -Check 'Netlogon service' -Status $netlogonStatus -Details $netlogon.Status.ToString()
 }
 
 Write-Host ''
