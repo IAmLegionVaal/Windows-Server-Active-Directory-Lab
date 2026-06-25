@@ -1,6 +1,13 @@
 # Validation and Test Evidence
 
-This document records the checks used to confirm that the completed lab was functioning as an Active Directory environment. Actual domain names, IP addresses, and computer names are omitted.
+This document records the checks used to confirm that the completed lab was functioning as an Active Directory environment. Actual domain names, IP addresses and computer names are omitted.
+
+Before running the examples, set the sanitized values to match the lab:
+
+```powershell
+$DomainName = 'corp.lab'
+$DomainController = 'dc01.corp.lab'
+```
 
 ## Server-side validation
 
@@ -40,7 +47,7 @@ Expected result: the DNS service reports a running state.
 ### Confirm domain DNS records
 
 ```powershell
-Resolve-DnsName -Type SRV "_ldap._tcp.dc._msdcs.<domain-name>"
+Resolve-DnsName -Type SRV "_ldap._tcp.dc._msdcs.$DomainName"
 ```
 
 Expected result: the query returns the domain-controller service record.
@@ -48,7 +55,7 @@ Expected result: the query returns the domain-controller service record.
 ### Confirm computer objects
 
 ```powershell
-Get-ADComputer -Filter * | Select-Object Name, Enabled, DistinguishedName
+Get-ADComputer -Filter * | Select-Object Name,Enabled,DistinguishedName
 ```
 
 Expected result: the domain controller and the two joined Windows devices are visible in Active Directory.
@@ -61,7 +68,7 @@ The following checks were performed on each joined Windows device.
 
 ```powershell
 Get-CimInstance Win32_ComputerSystem |
-    Select-Object Name, Domain, PartOfDomain
+    Select-Object Name,Domain,PartOfDomain
 ```
 
 Expected result: `PartOfDomain` is `True`, and the domain field shows the Active Directory domain.
@@ -69,7 +76,7 @@ Expected result: `PartOfDomain` is `True`, and the domain field shows the Active
 ### Confirm the current sign-in context
 
 ```powershell
-whoami
+whoami.exe
 ```
 
 Expected result: the output uses the `DOMAIN\username` format when signed in with the domain account.
@@ -85,46 +92,75 @@ Expected result: the active network adapter uses the domain controller as its DN
 ### Confirm name resolution
 
 ```powershell
-Resolve-DnsName <domain-name>
-Resolve-DnsName <domain-controller-name>
+Resolve-DnsName -Name $DomainName
+Resolve-DnsName -Name $DomainController
 ```
 
 Expected result: both names resolve successfully through the internal DNS service.
 
 ### Discover a domain controller
 
-```cmd
-nltest /dsgetdc:<domain-name>
+```powershell
+& nltest.exe "/dsgetdc:$DomainName"
+if ($LASTEXITCODE -ne 0) {
+    throw "Domain-controller discovery failed with exit code $LASTEXITCODE."
+}
 ```
 
 Expected result: Windows locates the domain controller and displays its site and service details.
 
 ### Test the secure channel
 
+Run this only on a domain-joined member workstation or member server, not on a domain controller:
+
 ```powershell
-Test-ComputerSecureChannel -Verbose
+$SecureChannelHealthy = Test-ComputerSecureChannel -Verbose
+if (-not $SecureChannelHealthy) {
+    throw 'The domain secure channel validation failed.'
+}
 ```
 
 Expected result: the command returns `True`.
 
-### Review domain membership with Systeminfo
+### Review domain membership
 
-```cmd
-systeminfo | findstr /B /C:"Domain"
+```powershell
+Get-CimInstance Win32_ComputerSystem |
+    Select-Object Name,Domain,PartOfDomain
 ```
 
-Expected result: the configured Active Directory domain is displayed rather than `WORKGROUP`.
+Expected result: `PartOfDomain` is `True` and `Domain` matches `$DomainName`.
 
 ## Connectivity checks
 
 ```powershell
-Test-NetConnection <domain-controller-name> -Port 53
-Test-NetConnection <domain-controller-name> -Port 88
-Test-NetConnection <domain-controller-name> -Port 389
-Test-NetConnection <domain-controller-name> -Port 445
+$RequiredPorts = @(
+    @{ Port = 53;  Service = 'DNS' }
+    @{ Port = 88;  Service = 'Kerberos' }
+    @{ Port = 389; Service = 'LDAP' }
+    @{ Port = 445; Service = 'SMB' }
+)
+
+$ConnectivityResults = foreach ($RequiredPort in $RequiredPorts) {
+    $Test = Test-NetConnection -ComputerName $DomainController `
+        -Port $RequiredPort.Port -WarningAction SilentlyContinue
+
+    [pscustomobject]@{
+        DomainController = $DomainController
+        Service          = $RequiredPort.Service
+        Port             = $RequiredPort.Port
+        Reachable        = $Test.TcpTestSucceeded
+    }
+}
+
+$ConnectivityResults | Format-Table -AutoSize
+
+if ($ConnectivityResults.Reachable -contains $false) {
+    throw 'One or more required domain-controller ports were unreachable.'
+}
 ```
 
-These checks validate access to common services used by DNS, Kerberos, LDAP, and SMB. They do not replace full service testing, but they are useful when diagnosing a failed domain join or sign-in.
+These checks validate TCP access to common services used by DNS, Kerberos, LDAP and SMB. They do not replace application-layer service testing.
 
 ## Final outcome
 
